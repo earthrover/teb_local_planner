@@ -64,6 +64,7 @@ public:
 
   std::string odom_topic; //!< Topic name of the odometry message, provided by the robot driver or simulator
   std::string map_frame; //!< Global planning frame
+  double control_frequency; //!< Control frequency
 
   //! Trajectory related parameters
   struct Trajectory

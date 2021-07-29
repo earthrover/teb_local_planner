@@ -220,6 +220,8 @@ public:
    */
   static double getNumberFromXMLRPC(XmlRpc::XmlRpcValue& value, const std::string& full_param_name);
   
+  double getControlFrequency(void);
+
   //@}
   
 protected:
@@ -355,7 +357,9 @@ protected:
    * @param max_vel_x_backwards Maximum translational velocity for backwards driving
    */
   void saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y,
-                        double max_vel_theta, double max_vel_x_backwards) const;
+                        double max_vel_theta, double max_vel_x_backwards,
+                        double acc_lim_x, double acc_lim_y, double acc_lim_theta, double control_frequency,
+                        geometry_msgs::Twist last_cmd, ros::Time time_last_cmd) const;
 
   
   /**
@@ -432,7 +436,9 @@ private:
   ros::Time time_last_oscillation_; //!< Store at which time stamp the last oscillation was detected
   RotType last_preferred_rotdir_; //!< Store recent preferred turning direction
   geometry_msgs::Twist last_cmd_; //!< Store the last control command generated in computeVelocityCommands()
-  
+  ros::Time time_last_cmd_; //!< Store at which time stamp the last command was generated in computeVelocityCommands()
+  double controller_period_; //!< Store period at which the TEB Local Planner is being run
+
   std::vector<geometry_msgs::Point> footprint_spec_; //!< Store the footprint of the robot 
   double robot_inscribed_radius_; //!< The radius of the inscribed circle of the robot (collision possible)
   double robot_circumscribed_radius; //!< The radius of the circumscribed circle of the robot

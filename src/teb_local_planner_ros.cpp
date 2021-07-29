@@ -164,6 +164,14 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
     // init the odom helper to receive the robot's velocity from odom messages
     odom_helper_.setOdomTopic(cfg_.odom_topic);
 
+    // Initialize last_cmd_ to zero
+    last_cmd_.linear.x = 0;
+    last_cmd_.linear.y = 0;
+    last_cmd_.angular.z = 0;
+    // time_last_cmd_ = ros::Time::now();
+    time_last_cmd_.sec = 0;
+    time_last_cmd_.nsec = 0;
+
     // setup dynamic reconfigure
     dynamic_recfg_ = boost::make_shared< dynamic_reconfigure::Server<TebLocalPlannerReconfigureConfig> >(nh);
     dynamic_reconfigure::Server<TebLocalPlannerReconfigureConfig>::CallbackType cb = boost::bind(&TebLocalPlannerROS::reconfigureCB, this, _1, _2);
@@ -363,6 +371,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
     time_last_infeasible_plan_ = ros::Time::now();
     last_cmd_ = cmd_vel.twist;
+    time_last_cmd_ = ros::Time::now();
     message = "teb_local_planner was not able to obtain a local plan";
     return mbf_msgs::ExePathResult::NO_VALID_CMD;
   }
@@ -379,6 +388,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
     time_last_infeasible_plan_ = ros::Time::now();
     last_cmd_ = cmd_vel.twist;
+    time_last_cmd_ = ros::Time::now();
     return mbf_msgs::ExePathResult::NO_VALID_CMD;
   }
          
@@ -402,6 +412,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
     time_last_infeasible_plan_ = ros::Time::now();
     last_cmd_ = cmd_vel.twist;
+    time_last_cmd_ = ros::Time::now();
     message = "teb_local_planner trajectory is not feasible";
     return mbf_msgs::ExePathResult::NO_VALID_CMD;
   }
@@ -415,13 +426,16 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     ++no_infeasible_plans_; // increase number of infeasible solutions in a row
     time_last_infeasible_plan_ = ros::Time::now();
     last_cmd_ = cmd_vel.twist;
+    time_last_cmd_ = ros::Time::now();
     message = "teb_local_planner velocity command invalid";
     return mbf_msgs::ExePathResult::NO_VALID_CMD;
   }
   
   // Saturate velocity, if the optimization results violates the constraints (could be possible due to soft constraints).
   saturateVelocity(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z,
-                   cfg_.robot.max_vel_x, cfg_.robot.max_vel_y, cfg_.robot.max_vel_theta, cfg_.robot.max_vel_x_backwards);
+                   cfg_.robot.max_vel_x, cfg_.robot.max_vel_y, cfg_.robot.max_vel_theta, cfg_.robot.max_vel_x_backwards,
+                   cfg_.robot.acc_lim_x, cfg_.robot.acc_lim_y, cfg_.robot.acc_lim_theta,
+                   cfg_.control_frequency, last_cmd_, time_last_cmd_);
 
   // convert rot-vel to steering angle if desired (carlike robot).
   // The min_turning_radius is allowed to be slighly smaller since it is a soft-constraint
@@ -434,6 +448,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     {
       cmd_vel.twist.linear.x = cmd_vel.twist.linear.y = cmd_vel.twist.angular.z = 0;
       last_cmd_ = cmd_vel.twist;
+      time_last_cmd_ = ros::Time::now();
       planner_->clearPlanner();
       ROS_WARN("TebLocalPlannerROS: Resulting steering angle is not finite. Resetting planner...");
       ++no_infeasible_plans_; // increase number of infeasible solutions in a row
@@ -448,6 +463,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   
   // store last command (for recovery analysis etc.)
   last_cmd_ = cmd_vel.twist;
+  time_last_cmd_ = ros::Time::now();
   
   // Now visualize everything    
   planner_->visualize();
@@ -869,42 +885,57 @@ double TebLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geomet
 }
       
       
-void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y, double max_vel_theta, double max_vel_x_backwards) const
+void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y, double max_vel_theta, double max_vel_x_backwards, double acc_lim_x, double acc_lim_y, double acc_lim_theta, double control_frequency, geometry_msgs::Twist last_cmd, ros::Time time_last_cmd) const
 {
   double ratio_x = 1, ratio_omega = 1, ratio_y = 1;
-  // Limit translational velocity for forward driving
-  if (vx > max_vel_x)
-    ratio_x = max_vel_x / vx;
-  
-  // limit strafing velocity
-  if (vy > max_vel_y || vy < -max_vel_y)
-    ratio_y = std::abs(vy / max_vel_y);
-  
-  // Limit angular velocity
-  if (omega > max_vel_theta || omega < -max_vel_theta)
-    ratio_omega = std::abs(max_vel_theta / omega);
-  
-  // Limit backwards velocity
-  if (max_vel_x_backwards<=0)
-  {
-    ROS_WARN_ONCE("TebLocalPlannerROS(): Do not choose max_vel_x_backwards to be <=0. Disable backwards driving by increasing the optimization weight for penalyzing backwards driving.");
-  }
-  else if (vx < -max_vel_x_backwards)
-    ratio_x = - max_vel_x_backwards / vx;
+  double saturated_vx, saturated_vy, saturated_omega;
+  double old_vx = last_cmd.linear.x;
+  double old_vy = last_cmd.linear.y;
+  double old_omega = last_cmd.angular.z;
+  double dt = std::min((ros::Time::now() - time_last_cmd).toSec(), 1/control_frequency);
 
-  if (cfg_.robot.use_proportional_saturation)
-  {
-    double ratio = std::min(std::min(ratio_x, ratio_y), ratio_omega);
-    vx *= ratio;
-    vy *= ratio;
-    omega *= ratio;
+  // Limit translational velocity for forward driving
+  if (vx - old_vx > 0) { // Positive acceleration. Saturate based on max forwards velocity and acceleration.
+    saturated_vx = std::min(std::min(vx, max_vel_x), old_vx + acc_lim_x * dt);
+  } else { // Negative acceleration. Saturate based on max backwards velocity and acceleration.
+    saturated_vx = std::max(std::max(vx, -max_vel_x_backwards), old_vx - acc_lim_x * dt);
   }
-  else
-  {
-    vx *= ratio_x;
-    vy *= ratio_y;
-    omega *= ratio_omega;
+  
+  // Limit strafing velocity
+  if (vy - old_vy > 0) { // Positive acceleration. Saturate based on max forwards velocity and acceleration.
+    saturated_vy = std::min(std::min(vy, max_vel_y), old_vy + acc_lim_y * dt);
+  } else { // Negative acceleration. Saturate based on max backwards velocity and acceleration.
+    saturated_vy = std::max(std::max(vy, -max_vel_y), old_vy - acc_lim_y * dt);
   }
+
+  // Limit translational velocity for forward driving
+  if (omega - old_omega > 0) { // Positive acceleration. Saturate based on max forwards velocity and acceleration.
+    saturated_omega = std::min(std::min(omega, max_vel_theta), old_omega + acc_lim_theta * dt);
+  } else { // Negative acceleration. Saturate based on max backwards velocity and acceleration.
+    saturated_omega = std::max(std::max(omega, -max_vel_theta), old_omega - acc_lim_theta * dt);
+  }
+
+  ratio_x = std::abs(saturated_vx / vx);
+  ratio_y = std::abs(saturated_vy / vy);
+  ratio_omega = std::abs(saturated_omega / omega);
+
+  // NOTE: Proportional saturation has been disabled for now for simplicity
+  // if (cfg_.robot.use_proportional_saturation)
+  // {
+  //   double ratio = std::min(std::min(ratio_x, ratio_y), ratio_omega);
+  //   vx *= ratio;
+  //   vy *= ratio;
+  //   omega *= ratio;
+  // }
+  // else
+  // {
+  //   vx *= ratio_x;
+  //   vy *= ratio_y;
+  //   omega *= ratio_omega;
+  // }
+    vx = saturated_vx;
+    vy = saturated_vy;
+    omega = saturated_omega;
 }
      
      
@@ -1204,6 +1235,11 @@ double TebLocalPlannerROS::getNumberFromXMLRPC(XmlRpc::XmlRpcValue& value, const
    }
    return value.getType() == XmlRpc::XmlRpcValue::TypeInt ? (int)(value) : (double)(value);
 }
+
+  double TebLocalPlannerROS::getControlFrequency(void)
+  {
+    return cfg_.control_frequency;
+  }
 
 } // end namespace teb_local_planner
 
