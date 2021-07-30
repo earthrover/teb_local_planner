@@ -46,7 +46,7 @@ void TebConfig::loadRosParamFromNodeHandle(const ros::NodeHandle& nh)
     
   nh.param("odom_topic", odom_topic, odom_topic);
   nh.param("map_frame", map_frame, map_frame);
-  nh.param("control_frequency", control_frequency, control_frequency);
+  nh.param("controller_frequency", controller_frequency, controller_frequency);
   
   // Trajectory
   nh.param("teb_autosize", trajectory.teb_autosize, trajectory.teb_autosize);

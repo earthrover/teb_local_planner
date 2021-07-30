@@ -188,8 +188,9 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
     
     // initialize failure detector
     ros::NodeHandle nh_move_base("~");
-    double controller_frequency = 5;
-    nh_move_base.param("controller_frequency", controller_frequency, controller_frequency);
+    // double controller_frequency = 5;
+    // nh_move_base.param("controller_frequency", controller_frequency, controller_frequency);
+    double controller_frequency = cfg_.controller_frequency;
     failure_detector_.setBufferLength(std::round(cfg_.recovery.oscillation_filter_duration*controller_frequency));
     
     // set initialized flag
@@ -435,7 +436,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   saturateVelocity(cmd_vel.twist.linear.x, cmd_vel.twist.linear.y, cmd_vel.twist.angular.z,
                    cfg_.robot.max_vel_x, cfg_.robot.max_vel_y, cfg_.robot.max_vel_theta, cfg_.robot.max_vel_x_backwards,
                    cfg_.robot.acc_lim_x, cfg_.robot.acc_lim_y, cfg_.robot.acc_lim_theta,
-                   cfg_.control_frequency, last_cmd_, time_last_cmd_);
+                   cfg_.controller_frequency, last_cmd_, time_last_cmd_);
 
   // convert rot-vel to steering angle if desired (carlike robot).
   // The min_turning_radius is allowed to be slighly smaller since it is a soft-constraint
@@ -1238,7 +1239,7 @@ double TebLocalPlannerROS::getNumberFromXMLRPC(XmlRpc::XmlRpcValue& value, const
 
   double TebLocalPlannerROS::getControlFrequency(void)
   {
-    return cfg_.control_frequency;
+    return cfg_.controller_frequency;
   }
 
 } // end namespace teb_local_planner
